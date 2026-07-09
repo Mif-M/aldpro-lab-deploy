@@ -1,0 +1,31 @@
+---
+# Задачи клонирования одной Linux-ВМ из базового шаблона.
+
+- name: Подготовить параметры клонируемой ВМ
+  ansible.builtin.set_fact:
+    vm_domain: "{{ item.domain | default(default_domain) }}"
+    vm_disk_path: "{{ disk_dir }}/{{ item.name }}.{{ item.domain | default(default_domain) }}.qcow2"
+    vm_libvirt_name: "{{ item.name }}.{{ item.domain | default(default_domain) }}"
+
+- name: Проверить наличие диска ВМ
+  ansible.builtin.stat:
+    path: "{{ vm_disk_path }}"
+  register: disk_check
+
+- name: Проверить регистрацию ВМ в libvirt
+  ansible.builtin.command: "virsh dominfo {{ vm_libvirt_name }}"
+  register: vm_info
+  changed_when: false
+  failed_when: false
+
+- name: Клонировать ВМ из шаблона
+  ansible.builtin.command: >
+    virt-clone --connect qemu:///system
+    --original {{ template_vm }}
+    --name {{ vm_libvirt_name }}
+    --file {{ vm_disk_path }}
+  when:
+    - not disk_check.stat.exists
+    - vm_info.rc != 0
+  register: clone_result
+  changed_when: clone_result.rc == 0

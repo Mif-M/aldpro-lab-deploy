@@ -1,0 +1,9 @@
+---
+# Главный playbook последовательно применяет роли настройки локальной рабочей станции.
+- name: Настройка локальной рабочей станции
+  hosts: localhost
+  vars_files:
+    - vars/course.yml
+  become: true
+  roles:
+    - { role: 'course', tags: 'course' }

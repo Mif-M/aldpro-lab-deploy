@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -e
+
+echo ">>> Configuring repositories"
+
+rm -f /etc/apt/sources.list
+
+{% for repo in repos %}
+echo "{{ repo }}" >> /etc/apt/sources.list
+{% endfor %}
+
+{% if aldpro_repo is defined %}
+mkdir -p /etc/apt/sources.list.d
+echo "{{ aldpro_repo }}" > /etc/apt/sources.list.d/aldpro.list
+{% endif %}
+
+echo ">>> Installing resolvconf"
+
+apt-get update
+apt-get install -y resolvconf
+
+echo ">>> Network stage completed"

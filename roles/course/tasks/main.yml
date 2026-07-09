@@ -1,0 +1,618 @@
+---
+
+# tasks/main.yml
+- name: Записать название курса
+  ansible.builtin.copy:
+    content: "{{ course_name }}"
+    dest: /etc/course
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+
+- name: Установить KVM и компоненты libvirt
+  ansible.builtin.apt:
+    name:
+      - astra-kvm
+      - python3-libvirt
+      - python3-lxml
+      - qemu-system
+      - libvirt-clients
+      - libvirt-daemon-system
+      - libguestfs-tools
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Добавить администратора в группы libvirt
+  ansible.builtin.user:
+    name: "{{ administrator }}"
+    groups: kvm,libvirt,libvirt-qemu,libvirt-admin
+    append: true
+  become: true
+
+- name: Перезапустить службу firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: restarted
+  become: true
+
+- name: Опубликовать ярлык virt-manager для flydesktop
+  ansible.builtin.copy:
+    src: /usr/share/applications/virt-manager.desktop
+    dest: /home/{{ administrator }}/Desktop/virt-manager.desktop
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+
+# ==========================================
+# Блок 1: Настройка libvirt storage pool
+# ==========================================
+- name: Настроить storage pool
+  block:
+    - name: Создать каталог для storage pool
+      ansible.builtin.file:
+        path: "{{ disk_dir }}"
+        state: directory
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+        mode: "0755"
+      become_user: root
+      become: true
+
+    - name: Скопировать XML storage pool на целевой хост
+      ansible.builtin.copy:
+        content: "{{ lookup('file', pool.file) }}"
+        dest: "/{{ pool.name }}/{{ pool.file }}"
+        mode: '0644'
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+      become_user: root
+      become: true
+
+    - name: Зарегистрировать storage pool в libvirt
+      ansible.builtin.command: "virsh -c qemu:///system pool-define /{{ pool.name }}/{{ pool.file }}"
+      register: pool_define
+      changed_when: "'defined' in pool_define.stdout"
+      # Повторный запуск не должен падать, если pool уже зарегистрирован.
+      failed_when: >
+        pool_define.rc != 0 and
+        'already exists' not in pool_define.stderr and
+        'уже существует' not in pool_define.stderr
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Запустить storage pool
+      ansible.builtin.command: "virsh -c qemu:///system pool-start {{ pool.name }}"
+      register: pool_start
+      changed_when: pool_start.rc == 0
+      # Учитываем английские и русские сообщения libvirt для идемпотентности.
+      failed_when: >
+        pool_start.rc != 0 and
+        'already active' not in pool_start.stderr and
+        'уже активен' not in pool_start.stderr
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Включить автозапуск storage pool
+      ansible.builtin.command: "virsh -c qemu:///system pool-autostart {{ pool.name }}"
+      register: pool_auto
+      changed_when: pool_auto.rc == 0
+      become_user: "{{ administrator }}"
+      become: true
+
+  become_user: "{{ administrator }}"
+  become: true
+
+# ==========================================
+# Блок 2: Настройка виртуальных сетей libvirt
+# ==========================================
+
+- name: Настроить виртуальные сети
+  block:
+    - name: Скопировать XML виртуальных сетей на целевой хост
+      ansible.builtin.copy:
+        content: "{{ lookup('file', item.file) }}"
+        # Копируем исходный XML-файл сети без переименования.
+        dest: "/{{ pool.name }}/{{ item.file }}"
+        mode: '0644'
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+      loop: "{{ network }}"
+      loop_control:
+        label: "{{ item.name }}"
+      become_user: root
+      become: true
+
+    - name: Зарегистрировать виртуальные сети в libvirt
+      ansible.builtin.command: "virsh -c qemu:///system net-define /{{ pool.name }}/{{ item.file }}"
+      loop: "{{ network }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: net_define
+      changed_when: "'defined' in net_define.stdout"
+      # Повторный запуск не должен падать, если сеть уже существует.
+      failed_when: >
+        net_define.rc != 0 and
+        'already exists' not in net_define.stderr and
+        'уже существует' not in net_define.stderr
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Запустить виртуальные сети
+      ansible.builtin.command: "virsh -c qemu:///system net-start {{ item.name }}"
+      loop: "{{ network }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: net_start
+      changed_when: net_start.rc == 0
+      failed_when: >
+        net_start.rc != 0 and
+        'already active' not in net_start.stderr and
+        'уже активна' not in net_start.stderr
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Включить автозапуск виртуальных сетей
+      ansible.builtin.command: "virsh -c qemu:///system net-autostart {{ item.name }}"
+      loop: "{{ network }}"
+      loop_control:
+        label: "{{ item.name }}"
+      become_user: "{{ administrator }}"
+      become: true
+  become: true
+  become_user: "{{ administrator }}"
+
+# ==========================================
+# Блок 3: Подготовка шаблонной ВМ
+# ==========================================
+
+- name: Подготовить шаблонную ВМ
+  block:
+    - name: Создать директорию "{{ vm.src_dir }}"
+      ansible.builtin.file:
+        path: "{{ vm.src_dir }}"
+        mode: '0755'
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+        state: directory
+
+    - name: Скачать шаблон VM c registry astra
+      ansible.builtin.get_url:
+        url: "{{ vm.registry  }}"
+        dest: "{{ vm.src_dir }}/{{ vm.template }}"
+        mode: '0644'
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+
+    - name: Скопировать XML шаблонной ВМ на целевой хост
+      ansible.builtin.copy:
+        content: "{{ lookup('file', 'template.xml') }}"
+        dest: "/{{ pool.name }}/template.xml"
+        mode: '0644'
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+      become_user: root
+      become: true
+
+    - name: Проверить виртуальный размер целевого диска (если существует)
+      ansible.builtin.command:
+        cmd: "qemu-img info --output=json /{{ pool.name }}/{{ vm.template }}"
+      register: qemu_info
+      changed_when: false
+      failed_when: false   # не прерываем плейбук, если файла нет
+      become_user: root
+      become: true
+
+    - name: Извлечь информацию о существовании и виртуальном размере
+      ansible.builtin.set_fact:
+        target_exists: "{{ qemu_info.rc == 0 }}"
+        target_virtual_size: >-
+          {{ (qemu_info.stdout | from_json).get('virtual-size', 0) if qemu_info.rc == 0 else 0 }}
+
+    - name: Создать новый диск большего размера (если нужно)
+      ansible.builtin.command:
+        cmd: "qemu-img create -f qcow2 /{{ pool.name }}/{{ vm.template }} {{ vm.new_size }}"
+      become_user: root
+      become: true
+      when: not target_exists or (target_virtual_size | int) < (vm.new_size | human_to_bytes)
+
+    - name: Выполнить virt-resize для расширения раздела (если диск был создан или изменён)
+      ansible.builtin.command:
+        cmd: "virt-resize --expand {{ vm.partition }} /{{ vm.src_dir }}/{{ vm.template }} /{{ pool.name }}/{{ vm.template }}"
+      register: resize_result
+      become_user: root
+      become: true
+      when: not target_exists or (target_virtual_size | int) < (vm.new_size | human_to_bytes)
+
+#    - name: Скопировать диск шаблонной ВМ
+#      ansible.builtin.copy:
+#        src: "{{ vm.src_dir }}/{{ vm.template }}"
+#        dest: "/{{ pool.name }}/{{ vm.template }}"
+#        owner: "{{ administrator }}"
+#        group: "{{ administrator }}"
+#        mode: '0644'
+#      become_user: root
+
+    - name: Зарегистрировать шаблонную ВМ (если не существует)
+      community.libvirt.virt:
+        command: define
+        xml: "{{ lookup('file', '/{{ pool.name }}/template.xml') }}"
+      become_user: "{{ administrator }}"
+      become: true
+
+  become: true
+  become_user: root
+
+# ==========================================
+# Блок 4: Клонирование и настройка Linux-ВМ
+# ==========================================
+
+- name: Создать временный каталог для скриптов настройки
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: .vmcustom
+  register: temp_dir
+  become: true
+
+- name: Клонировать и настроить Linux-ВМ
+  block:
+    - name: Подключить задачи клонирования ВМ
+      ansible.builtin.include_tasks: clone_vm.yml
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Сначала увеличиваем максимальные лимиты, затем выставляем текущие значения.
+    - name: Задать максимальное число vCPU для каждой ВМ
+      ansible.builtin.command: "virsh -c qemu:///system setvcpus {{ item.name }}.{{ item.domain | default(default_domain) }} {{ item.vcpus | default(default_vcpus) }} --maximum --config"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      become_user: "{{ administrator }}"
+      become: true
+      ignore_errors: true   # если максимум уже >= запрошенного, ошибка не критична
+
+    # Ошибки повышения лимита не критичны, если нужное значение уже задано.
+    - name: Задать текущее число vCPU для каждой ВМ
+      ansible.builtin.command: "virsh -c qemu:///system setvcpus {{ item.name }}.{{ item.domain | default(default_domain) }} {{ item.vcpus | default(default_vcpus) }} --config"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      become_user: "{{ administrator }}"
+      become: true
+
+    # Увеличиваем максимальный объём памяти перед установкой текущего значения.
+    - name: Задать максимальный объём памяти для каждой ВМ
+      ansible.builtin.command: "virsh -c qemu:///system setmaxmem {{ item.name }}.{{ item.domain | default(default_domain) }} {{ item.ram_mb | default(default_ram_mb) }}M --config"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      become_user: "{{ administrator }}"
+      become: true
+      ignore_errors: true   # если максимум уже >= нужного, ошибка не критична
+
+    - name: Задать текущий объём памяти для каждой ВМ
+      ansible.builtin.command: "virsh -c qemu:///system setmem {{ item.name }}.{{ item.domain | default(default_domain) }} {{ item.ram_mb | default(default_ram_mb) }}M --config"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Очистить уникальные данные шаблона через virt-sysprep
+      ansible.builtin.command: "virt-sysprep -a {{ disk_dir }}/{{ item.name }}.{{ item.domain | default(default_domain) }}.qcow2"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: sysprep_results
+      changed_when: sysprep_results.rc == 0
+      become_user: root
+      become: true
+
+    - name: Сформировать скрипт установки пакетов
+      ansible.builtin.template:
+        src: customize_vm_network.sh.j2
+        dest: "{{ temp_dir.path }}/{{ item.name }}_network.sh"
+        mode: "0755"
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        repos: "{{ item.repos | default(default_repos) }}"
+      become_user: root
+      become: true
+
+    - name: Сформировать скрипт локальной настройки
+      ansible.builtin.template:
+        src: customize_vm_local.sh.j2
+        dest: "{{ temp_dir.path }}/{{ item.name }}_local.sh"
+        mode: "0755"
+        owner: "{{ administrator }}"
+        group: "{{ administrator }}"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        hostname: "{{ item.name }}"
+        domain: "{{ item.domain | default(default_domain) }}"
+        ip: "{{ item.ip }}"
+        netmask: "{{ item.netmask | default(default_netmask) }}"
+        gateway: "{{ item.gateway | default(default_gateway) }}"
+        iface: "{{ item.iface | default(default_iface) }}"
+        dns_servers: "{{ item.dns_servers | default(default_dns_servers) }}"
+        dns_search: "{{ item.dns_search | default(default_dns_search) }}"
+      become_user: root
+      become: true
+
+    - name: Установить репозитории и resolvconf
+      ansible.builtin.command: >
+        virt-customize
+        --network
+        -a {{ disk_dir }}/{{ item.name }}.{{ item.domain | default(default_domain) }}.qcow2
+        --run {{ temp_dir.path }}/{{ item.name }}_network.sh
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: customize_network
+      changed_when: customize_network.rc == 0
+      become_user: root
+      become: true
+
+    - name: Выполнить локальную настройку ВМ
+      ansible.builtin.command: >
+        virt-customize
+        --no-network
+        -a {{ disk_dir }}/{{ item.name }}.{{ item.domain | default(default_domain) }}.qcow2
+        --run {{ temp_dir.path }}/{{ item.name }}_local.sh
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: customize_local
+      changed_when: customize_local.rc == 0
+      become_user: root
+      become: true
+
+    - name: Показать вывод customize_network
+      ansible.builtin.debug:
+        msg: "{{ item.item.name }}: {{ item.stdout_lines | default([]) }}"
+      loop: "{{ customize_network.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Показать вывод customize_local
+      ansible.builtin.debug:
+        msg: "{{ item.item.name }}: {{ item.stdout_lines | default([]) }}"
+      loop: "{{ customize_local.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Удалить временный каталог настройки
+      ansible.builtin.file:
+        path: "{{ temp_dir.path }}"
+        state: absent
+      when: temp_dir.path is defined
+      become: true
+      become_user: root
+
+  become: true
+  become_user: "{{ administrator }}"
+
+# ==========================================
+# Блок 6: Создание и настройка Windows-ВМ
+# ==========================================
+# - name: Подготовить Windows-ВМ
+#   block:
+#     # Проверяем наличие дисков, чтобы не копировать тяжёлые qcow2 повторно.
+#     - name: Проверить наличие дисков Windows-ВМ в пуле
+#       ansible.builtin.stat:
+#         path: "{{ disk_dir }}/{{ item.name }}.{{ win_domain }}.qcow2"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       register: win_disk_stat
+
+#     # Копируем диски из источника только при первом запуске.
+#     - name: Скопировать диски Windows-ВМ в каталог пула
+#       ansible.builtin.copy:
+#         src: "{{ win_src_dir }}/{{ item.item.name }}.{{ win_domain }}.qcow2"
+#         dest: "{{ disk_dir }}/{{ item.item.name }}.{{ win_domain }}.qcow2"
+#         remote_src: true
+#         owner: "{{ administrator }}"
+#         group: "{{ administrator }}"
+#         mode: '0644'
+#       loop: "{{ win_disk_stat.results }}"
+#       loop_control:
+#         label: "{{ item.item.name }}"
+#       when: not item.stat.exists
+#       become_user: root
+#       become: true
+
+#     # XML-конфиги Windows-ВМ хранятся в каталоге files/ роли.
+#     - name: Скопировать XML Windows-ВМ на целевой хост
+#       ansible.builtin.copy:
+#         content: "{{ lookup('file', item.name + '.' + win_domain + '.xml') }}"
+#         dest: "/tmp/{{ item.name }}.{{ win_domain }}.xml"
+#         mode: '0644'
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       become_user: root
+#       become: true
+
+#     # Регистрируем ВМ идемпотентно: существующая ВМ не считается ошибкой.
+#     - name: Зарегистрировать Windows-ВМ в libvirt
+#       ansible.builtin.command: "virsh -c qemu:///system define /tmp/{{ item.name }}.{{ win_domain }}.xml"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       register: win_define
+#       changed_when: "'defined' in win_define.stdout"
+#       failed_when: >
+#         win_define.rc != 0 and
+#         'already exists' not in win_define.stderr and
+#         'уже существует' not in win_define.stderr
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     # Выставляем ресурсы Windows-ВМ из vars/main.yml.
+
+#     - name: Задать максимальное число vCPU для Windows-ВМ
+#       ansible.builtin.command: "virsh -c qemu:///system setvcpus {{ item.name }}.{{ win_domain }} {{ item.vcpus }} --maximum --config"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       changed_when: true
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     - name: Задать число vCPU для Windows-ВМ
+#       ansible.builtin.command: "virsh -c qemu:///system setvcpus {{ item.name }}.{{ win_domain }} {{ item.vcpus }} --config"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       changed_when: true
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     - name: Задать максимальный объём памяти для Windows-ВМ
+#       ansible.builtin.command: "virsh -c qemu:///system setmaxmem {{ item.name }}.{{ win_domain }} {{ item.ram_mb }}M --config"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       changed_when: true
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     - name: Задать объём памяти для Windows-ВМ
+#       ansible.builtin.command: "virsh -c qemu:///system setmem {{ item.name }}.{{ win_domain }} {{ item.ram_mb }}M --config"
+#       loop: "{{ win_vms }}"
+#       loop_control:
+#         label: "{{ item.name }}"
+#       changed_when: true
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     - name: Проверить наличие снимка win
+#       ansible.builtin.shell:
+#         cmd: virsh -c qemu:///system snapshot-list "{{ item }}" --name | grep -Fx "{{ vm.start_snapshot }}"
+#       loop: "{{ win_vms | map(attribute='name') | map('regex_replace', '$', '.' + win_domain) | list }}"
+#       register: snap_check
+#       changed_when: false
+#       failed_when: false
+#       become_user: "{{ administrator }}"
+#       become: true
+
+#     - name: Создать снимок win, если отсутствует
+#       ansible.builtin.shell:
+#         cmd: virsh -c qemu:///system snapshot-create-as --name "{{ vm.start_snapshot }}" --domain "{{ item }}"
+#       loop: "{{ win_vms | map(attribute='name') | map('regex_replace', '$', '.' + win_domain) | list }}"
+#       when: (snap_check.results | selectattr('item', 'equalto', item) | first).rc != 0
+#       become_user: "{{ administrator }}"
+#       become: true
+#       changed_when: true
+
+#   become: true
+#   become_user: "{{ administrator }}"
+
+# ==========================================
+# Блок 7: Настройка PXE-загрузки для pxe-test-1
+# ==========================================
+- name: Настроить порядок PXE-загрузки для тестовой ВМ
+  block:
+    - name: Проверить наличие PXE-ВМ в libvirt
+      ansible.builtin.command: "virsh -c qemu:///system dominfo {{ pxe_vm_name }}.{{ default_domain }}"
+      register: pxe_dominfo
+      changed_when: false
+      failed_when: false
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Показать предупреждение, если PXE-ВМ отсутствует
+      ansible.builtin.debug:
+        msg: "ВНИМАНИЕ: ВМ '{{ pxe_vm_name }}.{{ default_domain }}' не зарегистрирована. Настройка PXE-загрузки пропущена."
+      when: pxe_dominfo.rc != 0
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: "Установить порядок загрузки: сеть, затем диск"
+      ansible.builtin.command: >
+        virt-xml -c qemu:///system {{ pxe_vm_name }}.{{ default_domain }}
+        --edit
+        --boot network,hd
+      register: pxe_virtxml
+      changed_when: "'XML updated' in pxe_virtxml.stdout"
+      # Игнорируем ошибку, если изменения не требуются (порядок уже такой)
+      failed_when: >
+        pxe_virtxml.rc != 0 and
+        'No changes' not in pxe_virtxml.stdout
+      when: pxe_dominfo.rc == 0
+      become_user: "{{ administrator }}"
+      become: true
+
+  become: true
+  become_user: "{{ administrator }}"
+
+# ==========================================
+# Блок 8: Создание снимков настроенных машин (с перезаписью)
+# ==========================================
+- name: Создание снимков настроенных машин
+  block:
+    - name: Проверить наличие снимка
+      ansible.builtin.shell:
+        cmd: virsh -c qemu:///system snapshot-list "{{ item }}" --name | grep -Fx "{{ vm.start_snapshot }}"
+      loop: "{{ vms | map(attribute='name') | map('regex_replace', '$', '.' + default_domain) | list }}"
+      register: snap_check
+      changed_when: false
+      failed_when: false
+      become_user: "{{ administrator }}"
+      become: true
+
+    - name: Удалить существующий снимок (если найден)
+      ansible.builtin.shell:
+        cmd: virsh -c qemu:///system snapshot-delete "{{ item }}" "{{ vm.start_snapshot }}"
+      loop: "{{ vms | map(attribute='name') | map('regex_replace', '$', '.' + default_domain) | list }}"
+      when: (snap_check.results | selectattr('item', 'equalto', item) | first).rc == 0
+      become_user: "{{ administrator }}"
+      become: true
+      changed_when: true
+      # Добавьте ignore_errors, если удаление может завершиться ошибкой
+      # (например, когда снимок используется как текущий)
+      ignore_errors: true
+
+    - name: Создать снимок (всегда, после удаления или если отсутствовал)
+      ansible.builtin.shell:
+        cmd: virsh -c qemu:///system snapshot-create-as --name "{{ vm.start_snapshot }}" --domain "{{ item }}"
+      loop: "{{ vms | map(attribute='name') | map('regex_replace', '$', '.' + default_domain) | list }}"
+      become_user: "{{ administrator }}"
+      become: true
+      changed_when: true
+
+  become: true
+  become_user: "{{ administrator }}"
+# ==========================================
+# Блок 5: Финальные штрихи
+# ==========================================
+
+- name: Добавить записи Linux-ВМ в /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ip }}  {{ item.name }}.{{ item.domain | default(default_domain) }}  {{ item.name }}"
+    state: present
+  loop: "{{ vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true

@@ -1,0 +1,114 @@
+---
+# Основные настройки роли: каталог пула, шаблон, администратор и параметры ВМ.
+disk_dir: "/labs"
+template_vm: "template"
+administrator: "sa" # Пользователь, от имени которого выполняются операции libvirt.
+course_name: "AP-301"
+default_vcpus: 1
+default_ram_mb: 2048
+default_domain: "ald.company.lan"
+default_netmask: "255.255.255.0"
+default_gateway: "10.0.1.1"
+default_iface: "eth0"
+default_dns_servers:
+  - "10.0.1.11"
+default_dns_search: "ald.company.lan"
+default_repos:
+  - "deb https://dl.astralinux.ru/astra/frozen/1.7_x86-64/1.7.7/uu/2/repository-main/ 1.7_x86-64 main contrib non-free"
+  - "deb https://dl.astralinux.ru/astra/frozen/1.7_x86-64/1.7.7/uu/2/repository-update/ 1.7_x86-64 main contrib non-free"
+  - "deb https://dl.astralinux.ru/astra/frozen/1.7_x86-64/1.7.7/uu/2/repository-base/ 1.7_x86-64 main contrib non-free"
+  - "deb https://dl.astralinux.ru/astra/frozen/1.7_x86-64/1.7.7/uu/2/repository-extended/ 1.7_x86-64 main contrib non-free"
+
+aldpro_repo: "deb https://dl.astralinux.ru/aldpro/frozen/01/3.1.0/ 1.7_x86-64 main base"
+
+# Описание libvirt-пула и виртуальных сетей, XML-файлы лежат в каталоге files/.
+pool:
+  name: "labs"
+  file: "pool-labs.xml"
+
+network:
+  - name: "ALD-Pro"
+    file: "net-ALD-Pro.xml"
+
+win_domain: "win.company.lan"
+win_src_dir: "/srv/files" # Каталог с подготовленными qcow2-дисками Windows.
+win_vms:
+  - name: "windc-1"
+    vcpus: 4
+    ram_mb: 4096
+  - name: "winpc-1"
+    vcpus: 2
+    ram_mb: 4096
+
+vm:
+  registry: "https://registry.astralinux.ru/artifactory/mg-generic/alse/qemu/alse-gui-1.7.7.uu1-max-qemu-mg16.3.0-amd64.qcow2"
+  src_dir: "/srv/files"  # Каталог на хосте, где лежат шаблон.
+  template: "template.qcow2" # Имя файла диска шаблона.
+  start_snapshot: "start-lab"
+  new_size: "100G"
+  partition: "/dev/sda2"
+# Linux-ВМ, которые клонируются из шаблона и настраиваются через virt-customize.
+
+pxe_vm_name: "pxe-test-1"
+
+vms:
+  - name: "dc-1"
+    ip: "10.0.1.11"
+    vcpus: 6 # Индивидуальное число ядер.
+    ram_mb: 8192 # Индивидуальный объём памяти.
+  - name: "dc-2"
+    ip: "10.0.1.12"
+    vcpus: 6 # Индивидуальное число ядер.
+    ram_mb: 8192 # Индивидуальный объём памяти.
+  - name: "pc-1"
+    ip: "10.0.1.51"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "pc-2"
+    ip: "10.0.1.52"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "pc-5"
+    ip: "10.0.1.55"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "pc-6"
+    ip: "10.0.1.56"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "file-1"
+    ip: "10.0.1.24"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "repo-1"
+    ip: "10.0.1.23"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "cups-1"
+    ip: "10.0.1.25"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "printer-1"
+    ip: "10.0.1.26"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "dhcp-1"
+    ip: "10.0.1.30"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "pxe-1"
+    ip: "10.0.1.33"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "pxe-test-1"
+    ip: "10.0.1.34"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "monitoring"
+    ip: "10.0.1.21"
+    vcpus: 2
+    ram_mb: 3072
+  - name: "audit-1"
+    ip: "10.0.1.22"
+    vcpus: 2
+    ram_mb: 3072

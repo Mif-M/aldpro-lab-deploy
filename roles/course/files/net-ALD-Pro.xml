@@ -1,0 +1,13 @@
+<network connections='51'>
+  <name>ALD-Pro</name>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <bridge name='virbr1' stp='on' delay='0'/>
+  <domain name='ALD-Pro'/>
+  <ip address='10.0.1.1' netmask='255.255.255.0'>
+  </ip>
+</network>
+

@@ -1,0 +1,61 @@
+#!/bin/bash
+
+set -e
+
+echo ">>> Customizing VM {{ hostname }}.{{ domain }}"
+
+# Hostname
+echo "{{ hostname }}.{{ domain }}" > /etc/hostname
+hostnamectl set-hostname "{{ hostname }}.{{ domain }}" 2>/dev/null || true
+
+# Hosts
+sed -i "/{{ hostname }}/d" /etc/hosts
+sed -i "/^127\.0\.1\.1/d" /etc/hosts
+
+echo "127.0.1.1 {{ hostname }}" >> /etc/hosts
+echo "{{ ip }} {{ hostname }}.{{ domain }} {{ hostname }}" >> /etc/hosts
+
+# NetworkManager
+systemctl stop NetworkManager || true
+systemctl disable NetworkManager || true
+systemctl mask NetworkManager || true
+
+# interfaces
+cat > /etc/network/interfaces << EOF
+auto lo
+iface lo inet loopback
+
+auto {{ iface }}
+iface {{ iface }} inet static
+    address {{ ip }}
+    netmask {{ netmask }}
+{% if gateway %}
+    gateway {{ gateway }}
+{% endif %}
+{% if dns_servers | length > 0 %}
+    dns-nameservers {{ dns_servers | join(' ') }}
+{% endif %}
+{% if dns_search %}
+    dns-search {{ dns_search }}
+{% endif %}
+EOF
+
+mkdir -p /etc/resolvconf/resolv.conf.d
+
+cat > /etc/resolvconf/resolv.conf.d/base << EOF
+{% for ns in dns_servers %}
+nameserver {{ ns }}
+{% endfor %}
+EOF
+
+rm -f /etc/resolv.conf
+ln -sf /etc/resolvconf/run/resolv.conf /etc/resolv.conf
+
+resolvconf -u || true
+
+systemctl enable networking || true
+
+echo ">>> Reconfiguring openssh-server"
+dpkg-reconfigure -f noninteractive openssh-server || true
+
+echo ">>> Customization completed"
