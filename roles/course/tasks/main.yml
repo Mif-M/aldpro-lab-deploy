@@ -74,33 +74,24 @@
       become: true
 
     - name: Зарегистрировать storage pool в libvirt
-      ansible.builtin.command: "virsh -c qemu:///system pool-define /{{ pool.name }}/{{ pool.file }}"
-      register: pool_define
-      changed_when: "'defined' in pool_define.stdout"
-      # Повторный запуск не должен падать, если pool уже зарегистрирован.
-      failed_when: >
-        pool_define.rc != 0 and
-        'already exists' not in pool_define.stderr and
-        'уже существует' not in pool_define.stderr
+      community.libvirt.virt_pool:
+        name: "{{ pool.name }}"
+        xml: "{{ lookup('file', pool.file) }}"
+        state: present
       become_user: "{{ administrator }}"
       become: true
 
     - name: Запустить storage pool
-      ansible.builtin.command: "virsh -c qemu:///system pool-start {{ pool.name }}"
-      register: pool_start
-      changed_when: pool_start.rc == 0
-      # Учитываем английские и русские сообщения libvirt для идемпотентности.
-      failed_when: >
-        pool_start.rc != 0 and
-        'already active' not in pool_start.stderr and
-        'уже активен' not in pool_start.stderr
+      community.libvirt.virt_pool:
+        name: "{{ pool.name }}"
+        state: active
       become_user: "{{ administrator }}"
       become: true
 
     - name: Включить автозапуск storage pool
-      ansible.builtin.command: "virsh -c qemu:///system pool-autostart {{ pool.name }}"
-      register: pool_auto
-      changed_when: pool_auto.rc == 0
+      community.libvirt.virt_pool:
+        name: "{{ pool.name }}"
+        autostart: true
       become_user: "{{ administrator }}"
       become: true
 
@@ -128,36 +119,33 @@
       become: true
 
     - name: Зарегистрировать виртуальные сети в libvirt
-      ansible.builtin.command: "virsh -c qemu:///system net-define /{{ pool.name }}/{{ item.file }}"
+      community.libvirt.virt_net:
+        command: define
+        name: "{{ item.name }}"
+        xml: "{{ lookup('file', item.file) }}"
+        uri: qemu:///system
       loop: "{{ network }}"
       loop_control:
         label: "{{ item.name }}"
-      register: net_define
-      changed_when: "'defined' in net_define.stdout"
-      # Повторный запуск не должен падать, если сеть уже существует.
-      failed_when: >
-        net_define.rc != 0 and
-        'already exists' not in net_define.stderr and
-        'уже существует' not in net_define.stderr
       become_user: "{{ administrator }}"
       become: true
 
     - name: Запустить виртуальные сети
-      ansible.builtin.command: "virsh -c qemu:///system net-start {{ item.name }}"
+      community.libvirt.virt_net:
+        state: active
+        name: "{{ item.name }}"
+        uri: qemu:///system
       loop: "{{ network }}"
       loop_control:
         label: "{{ item.name }}"
-      register: net_start
-      changed_when: net_start.rc == 0
-      failed_when: >
-        net_start.rc != 0 and
-        'already active' not in net_start.stderr and
-        'уже активна' not in net_start.stderr
       become_user: "{{ administrator }}"
       become: true
 
     - name: Включить автозапуск виртуальных сетей
-      ansible.builtin.command: "virsh -c qemu:///system net-autostart {{ item.name }}"
+      community.libvirt.virt_net:
+        name: "{{ item.name }}"
+        autostart: true
+        uri: qemu:///system
       loop: "{{ network }}"
       loop_control:
         label: "{{ item.name }}"
