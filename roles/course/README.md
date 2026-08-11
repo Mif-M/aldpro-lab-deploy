@@ -103,13 +103,13 @@
 
 На Astra Linux:
 
-bash```
+```bash
 sudo apt update
 sudo apt install ansible
 ```
 
 Проверьте установку:
-bash```
+```bash
 ansible --version
 ```
 2. Подготовка окружения
@@ -122,7 +122,7 @@ ansible --version
 
 Если вы используете этот playbook, запустите его перед основной ролью:
 
-bash```
+```bash
 ansible-playbook -i inventory.yml init.yml
 ```
 Примечание: init-playbook.yml не является обязательным и может отсутствовать в вашей версии проекта. Если он есть – ознакомьтесь с его содержимым перед запуском.
